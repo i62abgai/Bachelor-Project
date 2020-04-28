@@ -35,7 +35,7 @@ import csv
 from os import listdir
 from os.path import isfile, join
 
-def plot_accuracy(y_true, y_pred, xax_, t_s, train_size, score, filename):
+def plot_accuracy(y_true, y_pred, xax_, t_s, train_size, score, filename, dates):
 
     xax=xax_
     ig=plt.figure(figsize=(25, 12), dpi= 80, facecolor='w', edgecolor='k')
@@ -46,7 +46,7 @@ def plot_accuracy(y_true, y_pred, xax_, t_s, train_size, score, filename):
     step = abs(max_y_bound-min_y_bound)/50
 
     plt.yticks(np.arange(min_y_bound, max_y_bound+step, step))
-    plt.xticks(np.arange(0, y_true[0::xax].size+1,1), np.arange(0, y_true.size, 1)[0::xax], rotation=70)
+    plt.xticks(np.arange(0, y_true[0::xax].size+1,1), dates[0::xax], rotation=70)
 
  
     plt.xlabel('Instances')
@@ -54,8 +54,8 @@ def plot_accuracy(y_true, y_pred, xax_, t_s, train_size, score, filename):
     plt.legend()
     plt.grid()
     plt.tight_layout()
-    plt.savefig("graphs/randomsearch/"+filename+"_score{score:.3f}_test{test_s:.4f}_train{train:.3f}.png".format(test_s=t_s, score = score, train=train_size))
-    fname = "predictions/randomsearch/"+filename+"_score{score:.3f}_test{test_s:.4f}_train{train:.3f}.csv".format(test_s=t_s, score = score, train=train_size)
+    plt.savefig("graphs/random_split/"+filename+"_score{score:.3f}_test{test_s:.4f}_train{train:.3f}.png".format(test_s=t_s, score = score, train=train_size))
+    fname = "predictions/random_split/"+filename+"_score{score:.3f}_test{test_s:.4f}_train{train:.3f}.csv".format(test_s=t_s, score = score, train=train_size)
     y_true = np.ravel(y_true)
     y_pred = np.ravel(y_pred)
     df = pd.DataFrame({"y_true" : y_true, "y_pred" : y_pred})
@@ -92,69 +92,82 @@ def remove_outliers(dataset):
     threshold = 3
     return dataset[(z < threshold).all(axis=1)]
 
-def get_percentage_list(total_size):
-    one_hour = get_percentage(60, total_size)
-    three_hour = get_percentage(180, total_size)
-    six_hour = get_percentage(360, total_size)
-    one_day = get_percentage(1440, total_size)
-    #three_day = get_percentage(3*1440, total_size)
-    return [one_hour, three_hour, six_hour, one_day] #, three_day]
 
-def get_percentage(x, total):
-    return ((x*100)/total)/100
 
-def main():
-    filename = 'merged_useless'
-    dataset = pd.read_csv('merged_data/'+filename+'.csv', delimiter=";", parse_dates=True)
-    dataset = dataset.drop(['id'], axis=1)
+mypath = 'data/'
+onlyfiles = [f for f in listdir(mypath) if isfile(join(mypath, f))]
 
-    print(dataset.head(10))
-    input()
+output = []
+for file in onlyfiles:
+
+    #Read file and change date type
+    filename = os.path.splitext(file)[0]
+    dataset = pd.read_csv('data/'+filename+'.csv', delimiter=";", parse_dates=True)
+    dataset['Time'] = pd.to_datetime(dataset.Time)
+
     dataset = remove_outliers(dataset)
 
-    #Get min and max
-    min_CO2 = dataset['CO2'].min()
-    max_CO2 = dataset['CO2'].max()
+    #Filter dataset
+    dataset = filter_data(dataset, 41, 1)
 
-    #Filter dataset data
-    dataset = filter_data(dataset, 21, 1)
+    test_size = [1440, 1440*5]
+    for i in test_size:
 
-    #Normalize dataset
-    dataset = normalize_data(dataset)
+        #Split between X and y
+        X = dataset.drop(['CO2', 'Time'], axis=1)
+        y = dataset[['CO2', 'Time']]
 
-    X = dataset.drop(['CO2', 'Time'], axis=1)
-    y = dataset['CO2'].to_numpy()
+        #Split between train and test
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=i, random_state=55, shuffle = True)
+        X_train = X_train.copy()
+        X_test = X_test.copy()
+        date_test = y_test['Time']
 
-    train_size = 0.7
-    test_size = 0.3
+        y_test = y_test['CO2'].to_numpy()
+        y_train = y_train['CO2'].to_numpy()
 
-    sc_X = StandardScaler()
-    X = sc_X.fit_transform(X)
+        #Scale data
+        min_H = X_train['H'].min()
+        max_H = X_train['H'].max()
 
+        min_T = X_train['T'].min()
+        max_T = X_train['T'].max()
 
-    tests = get_percentage_list(dataset.shape[0])
-    regressor = []
-    for i in range(len(tests)):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=train_size, test_size=tests[i], random_state=check_random_state(0))
+        X_train['H'] = (X_train['H']-min_H)/(max_H-min_H)
+        X_train['T'] = (X_train['T']-min_T)/(max_T-min_T)
 
+        X_test['H'] = (X_test['H']-min_H)/(max_H-min_H)
+        X_test['T'] = (X_test['T']-min_T)/(max_T-min_T)
+
+        sc_X = StandardScaler()
+        X_train = sc_X.fit_transform(X_train)
+        X_test = sc_X.transform(X_test)
+
+        # Select tuning parameter range
         gamma_range = np.logspace(0.0001,9,base=2, num=40)
         C_range = np.logspace(0.0001,9,base=2, num=40)
         epsilon_range = [0.01, 0.05, 0.1, 0.125, 0.2, 0.5, 0.7, 0.9]
         tuned_parameters = [{'kernel': ['rbf'], 'gamma': gamma_range, 'C': C_range, 'epsilon':epsilon_range }]
-        if i ==0:
-            regressor = RandomizedSearchCV(SVR(), tuned_parameters, scoring='r2', cv=3, verbose=10, n_iter=10)
-            regressor.fit(X_train, y_train)
 
+        #Regressor parameter estimation
+        regressor = RandomizedSearchCV(SVR(), tuned_parameters, scoring='r2', cv=3, verbose=1, n_iter=10)
+        regressor.fit(X_train, y_train)
+
+        #Predict test values
         y_true, y_pred = y_test, regressor.predict(X_test)
 
-        output = regression_results(y_true, y_pred)
+        #Calculate the score
+        results = regression_results(y_true, y_pred)      
+        results['train_size'] = i
+        results['test_size'] = i
+        results['file'] = filename
+        output.append(results)
+        plot_accuracy(y_true, y_pred, int(y_true.size/50), i, i, results['r2'], filename, sorted(date_test))
+    
+results_df = pd.DataFrame.from_dict(output)
+print(results_df)
+results_df.to_csv('predictions/results_shuffle.csv', sep=';')
 
-        y_true = inverse_normalize(y_true, min_CO2, max_CO2)
-        y_pred = inverse_normalize(y_pred, min_CO2, max_CO2)
 
-        plot_accuracy(y_true, y_pred, int(y_pred.size/50), test_size, train_size, output['r2'], 'merged')
 
-    print(pd.DataFrame.from_dict(output))
 
-if __name__ == "__main__":
-    main()
